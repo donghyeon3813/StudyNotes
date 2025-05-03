@@ -269,4 +269,138 @@ Article article = entityManager.find(Article.class, 1L);
 </pre>
 
 ## 밸류 컬렉션을 @Entity로 매핑하기
+- 개념적으로 밸류이지만 기술 한계나 팀 표준 때문에 @Entity 사용할 수도 있음.
+- JPA는 @Embeddable 타입의 클래스 상속 매핑을 지원 X
+- 상속 구조를 갖는 밸류 타입을 사용하려면 @Entity를 이용해서 상속 매핑으로 처리해야 한다.
+- 밸류 타입을 @Entity로 매핑하므로 식별자 매핑을 위한 필드도 추가해야 한다.
+  - 또한, 구현 클래스를 구분하기 위한 타입 식별 컬럼을 추가해야 한다.
+- 설정
+  - @Inheritance 애너테이션 적용
+  - strategy 값으로 SINGLE_TABLE 사용
+  - @DiscriminatorColumn 애너테이션을 이용하여 타입 구분용으로 사용할 컬럼 지정
+<pre>
+<code>
+@Entity
+@Inheritance(strategy = InheritanceType.SINGLE_TABLE)
+@Discriminator(name = "image_type")
+@Table(name = "image)
+public abstract class Image {
+  ...
+}
 
+@Entity
+@DiscriminatorValue("II")
+public class InternalImage extends Image {
+  ...
+}
+
+@Entity
+@DiscriminatorValue("EI")
+public class ExternalImage extends Image {
+  ...
+}
+
+@Entity
+@Table(name = "product")
+public class Product {
+  ...
+
+  @OneToMany(
+    cascde = {CascadeType.PERSIST, CascadeType.REMOVE},
+    orphanRemoval = true)
+  @JoinColumn(name = "product_id")
+  @OrderColumn(name = "list_idx")
+  private List<Image> images = new ArrayList<>();
+
+  ...
+}
+</code>
+</pre>
+
+- 이런 경우 삭제같은 경우 select 쿼리로 로딩 후, delete 쿼리를 실행. > 성능 문제!
+- 하이버네이트는 @Embeddable 타입에 대한 컬렉션의 clear() 메서드를 호출하면 컬렉션에 속한 객체를 로딩하지 않고 한 번의 delete 쿼리로 삭제 처리를 수행한다
+- 애그리거트의 특성을 유지하면서 이 문제를 해소하려면 결국 상속을 포기하고 @Embeddable로 매핑된 단일 클래스로 구현해야 한다,.
+
+<pre>
+<code>
+@Embeddable
+public class Image {
+  @Column(name = "image_type")
+  private String imageType;
+
+  ...
+
+  public boolean hasThumbnail() {
+    // 성능을 위해 다형을 포기하고 if-else로 구현
+    if (imageType.equals("II") {
+      return true;
+    } else {
+      return false;
+    }
+  }
+}
+</code>
+</pre>
+
+- 코드 유지 보수와 성능의 두 가지 측면을 고려해서 구현 방식을 선택해야 함.
+
+## ID 참조와 조인 테이블을 이용한 단방향 M-N 매핑
+<pre>
+<code>
+@Entity
+@Table(name = "product")
+public class Product {
+  ...
+
+  @ElementCollection
+  @CollectionTable(name = "product_category",
+    joinColumns = @JoinColumn(name = "product_id"))
+  private Set<CategoryId> categoryIds;
+}
+</code>
+</pre>
+
+# 애그리거트 로딩 전략
+- EAGER / LAZY
+- 애그리거트는 개념적으로 하나여야 한다.
+- 하지만 루트 엔티티를 로딩하는 시점에 애그리거트에 속한 객체를 모두 로딩해야 하는것은 아니다.
+- 애그리거트가 완전해야 하는 이유
+  - **상태를 변경하는 기능을 실행할 때 애그리거트 상태가 완전해야 하기 때문**
+    - 상태를 변경하는 시점에 필요한 구성요소만 로딩해도 문제가 되지 않음.
+  - 표현 영역에서 애그리거트의 상태 정보를 보여줄 때 필요하기 때문
+    - 별도의 조회 전용 기능과 모델을 구현하는 방식을 사용하는 것이 더 유리
+
+# 애그리거트의 영속성 전파
+- 애그리거트가 완전한 상태여야 한다는 것은 애그리거트 루트를 조회할 때 뿐만 이나리 저장하고 삭제할 때도 하나로 처리해야 함을 의미한다.
+  - 저장 메서드는 애그리거트 루트만 저장하면 안 되고, 애그리거트에 속한 모든 객체를 저장해야 한다.
+  - 삭제 메서든느 애그리거트 루트뿐만 아니라 애그리거트에 속한 모든 객체를 삭제해야 한다.
+
+# 식별자 생성 기능
+- 식별자는 크게 세 가지 방식 중 하나로 생성
+  - 사용자가 직접 생성
+  - 도메인 로직으로 생성
+  - DB를 이용한 일련번호 사용
+
+# 도메인 구현과 DIP
+- 리포지터리는 DIP 원칙을 어기고 있다.
+  - JPA에 특화된 @Entity @Table @Id @Column 과 같은 애너테이션을 사용하며 JPA에 의존
+  - 즉, 도메인이 인프라에 의존하는 것.
+- 구현 기술에 대한 의존 없이 도메인을 순수하게 유지하려면 스프링 데이터 JPA의 Repository 인터페이스를 상속받지 않도록 수정.
+
+| [domain]          |   | [infra]           |
+|-------------------|---|-------------------|
+| ArticleRepository | ← | JpaArticleRepsotiroy |
+|    ↓               |   | ↓                |
+| Article           | ←  | JpaArticle        |
+
+- 특정 기술에 의존하지 않는 순수한 도메인 모델을 추구
+- 이 구조를 가지면 구현 기술을 변경하더라도 도메인이 받는 영향을 최소화 할 수 있다.
+- 하지만 이런 변경은 거의 없는 상황임.
+  - 이런 변경을 미리 대비하는 것은 과함.
+  - 애그리거트, 리포지터리 등 도메인 모델을 구현할 때 타협
+    - JPA 전용 애너테이션을 사용하긴 했지만 도메인 모델을 단위 테스트하는 데 문제는 없음.
+    - 물론 JPA에 맞춰 도메인 모델을 구현해야 할 때도 있지만 이런 상황은 드물다.
+    - 리포지터리도 마찬가지.
+      - JpaRepository 인터페이스를 상속하고 있지만 리포지터리 자체는 인터페이스이고 테스트 가능성을 해치지 않는다.
+- DIP를 완벽하게 지키면 좋겠지만 개발 편의성과 실용성을 가져가면서 구조적인 유연함은 어느 정도 유지
+- 복잡도를 높이지 않으면서 기술에 따른 구현 제약이 낮다면 합리적인 선택이라고 생각한다고 함.
